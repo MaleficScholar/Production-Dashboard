@@ -33,6 +33,7 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+    /* ========== LIGHT MODE (default) ========== */
     .stMetric {
         background-color: #f8f9fa;
         border: 1px solid #dee2e6;
@@ -40,9 +41,7 @@ st.markdown("""
         padding: 12px 16px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.05);
     }
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-    }
+    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
     .stTabs [data-baseweb="tab"] {
         height: 50px;
         white-space: pre-wrap;
@@ -54,14 +53,42 @@ st.markdown("""
         background-color: #2E86AB;
         color: white;
     }
-    .metric-delta-positive { color: #28a745; }
-    .metric-delta-negative { color: #dc3545; }
     .report-header {
         background: linear-gradient(90deg, #2E86AB 0%, #A23B72 100%);
         color: white;
         padding: 20px;
         border-radius: 12px;
         margin-bottom: 20px;
+    }
+
+    /* ========== DARK MODE (auto) ========== */
+    @media (prefers-color-scheme: dark) {
+        .stApp {
+            background-color: #0e1117;
+            color: #fafafa;
+        }
+        .stMetric {
+            background-color: #262730;
+            border: 1px solid #4a4a4a;
+            color: #fafafa;
+        }
+        .stTabs [data-baseweb="tab"] {
+            background-color: #262730;
+            color: #fafafa;
+        }
+        .stTabs [aria-selected="true"] {
+            background-color: #2E86AB;
+            color: white;
+        }
+        .stDataFrame, .stTable {
+            background-color: #262730;
+        }
+        .report-header {
+            background: linear-gradient(90deg, #1f4e79 0%, #6b2d4e 100%);
+        }
+        .stMarkdown, .stText, p, h1, h2, h3, h4, h5, h6 {
+            color: #fafafa;
+        }
     }
 </style>
 """, unsafe_allow_html=True)
