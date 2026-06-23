@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Daily RO Production Report Dashboard
-Streamlit web interface for DB2 read-only API
-Pulls hours per RO, compares to another day, daily production report + hourly monitoring
+Daily RO Production Report Dashboard v2.0
+Streamlit web interface for DB2 / RO Writer (MSSQL) read-only access
+Pulls hours per RO, hourly monitoring, day-over-day comparison, efficiency tracking,
+7/30-day trends, and weekly production tracker (Excel-style Earned/Goal)
 """
 
 import streamlit as st
@@ -26,7 +27,7 @@ st.set_page_config(
     menu_items={
         "Get Help": "https://github.com/your-org/ro-dashboard",
         "Report a bug": None,
-        "About": "Internal tool • Read-only DB2 API • v1.0"
+        "About": "Internal tool • Read-only DB2/MSSQL API • v2.0 with Trends & Weekly Tracker"
     }
 )
 
@@ -66,14 +67,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =============================================================================
-# CONFIGURATION - UPDATE THESE FOR YOUR ENVIRONMENT
+# CONFIGURATION
 # =============================================================================
 USE_MOCK_DEFAULT = True          # Set to False in production after API integration
 API_BASE_URL = "https://api.yourcompany.com/db2/v1"  # <-- CHANGE ME
-# Recommended: store in .streamlit/secrets.toml
-# [db2]
-# api_key = "sk_live_xxxxxxxxxxxxxxxx"
-# base_url = "https://..."
 
 try:
     API_KEY = st.secrets["db2"]["api_key"]
@@ -81,6 +78,7 @@ try:
         API_BASE_URL = st.secrets["db2"]["base_url"]
 except (KeyError, FileNotFoundError):
     API_KEY = os.getenv("DB2_API_KEY", "YOUR_API_KEY_HERE")
+
 
 # =============================================================================
 # DATA FUNCTIONS
@@ -123,39 +121,33 @@ def generate_mock_data(report_date: date) -> pd.DataFrame:
     return df
 
 
-def fetch_data(report_date: date) -> pd.DataFrame:
+def fetch_data(report_date: date, use_mock: bool | None = None) -> pd.DataFrame:
     """
     Fetch labor data for a given date.
-    Now supports both:
-    - Direct Microsoft SQL Server connection (RO Writer database)
-    - Generic REST API (previous method)
-    - Mock data for demo
+    Supports direct Microsoft SQL Server (RO Writer) or Mock data.
     """
-    if USE_MOCK_DEFAULT:
+    effective_mock = use_mock if use_mock is not None else USE_MOCK_DEFAULT
+
+    if effective_mock:
         return generate_mock_data(report_date)
 
     # ====================== MICROSOFT SQL SERVER (RO Writer) ======================
-    # This is now the primary recommended path since RO Writer uses MSSQL
     try:
         import pyodbc
     except ImportError:
         st.error("pyodbc is not installed. Please run: pip install pyodbc")
         return pd.DataFrame()
 
-    # Get connection string from secrets or environment
     conn_str = st.secrets.get("mssql", {}).get("connection_string") or os.getenv("MSSQL_CONNECTION_STRING")
 
     if not conn_str:
-        st.warning("No MSSQL connection string found. Falling back to mock data. "
-                   "Add it to .streamlit/secrets.toml under [mssql] connection_string = '...'")
+        st.warning("No MSSQL connection string found. Falling back to mock data.")
         return generate_mock_data(report_date)
 
     try:
         conn = pyodbc.connect(conn_str, timeout=30)
         cursor = conn.cursor()
 
-        # Example query - CUSTOMIZE based on your RO Writer tables
-        # This assumes common table/column patterns. Adjust table and column names as needed.
         query = """
             SELECT 
                 ro_number,
@@ -163,7 +155,7 @@ def fetch_data(report_date: date) -> pd.DataFrame:
                 department,
                 logged_hours,
                 start_time AS log_timestamp
-            FROM labor_hours          -- ← Change to your actual table name
+            FROM labor_hours
             WHERE CAST(work_date AS DATE) = ?
             ORDER BY start_time
         """
@@ -176,10 +168,8 @@ def fetch_data(report_date: date) -> pd.DataFrame:
 
         columns = [column[0] for column in cursor.description]
         df = pd.DataFrame.from_records(rows, columns=columns)
-
         conn.close()
 
-        # Normalize column names (in case your schema is slightly different)
         column_map = {
             "ro_num": "ro_number",
             "repair_order_id": "ro_number",
@@ -195,12 +185,10 @@ def fetch_data(report_date: date) -> pd.DataFrame:
         }
         df = df.rename(columns={k: v for k, v in column_map.items() if k in df.columns})
 
-        # Ensure minimum required columns
         if "ro_number" not in df.columns or "technician" not in df.columns or "logged_hours" not in df.columns:
-            st.error("Required columns missing from MSSQL query result. Please adjust the query in fetch_data().")
+            st.error("Required columns missing from MSSQL query result. Adjust the query in fetch_data().")
             return pd.DataFrame()
 
-        # Clean and enrich data
         df["logged_hours"] = pd.to_numeric(df["logged_hours"], errors="coerce").fillna(0)
         if "log_timestamp" in df.columns:
             df["log_timestamp"] = pd.to_datetime(df["log_timestamp"], errors="coerce")
@@ -209,12 +197,10 @@ def fetch_data(report_date: date) -> pd.DataFrame:
             df["hour"] = 12
 
         df["date"] = report_date
-
         return df
 
     except pyodbc.Error as e:
         st.error(f"MSSQL Connection/Query Error: {str(e)}")
-        st.info("Check your connection string and that the SQL query matches your RO Writer schema.")
         return pd.DataFrame()
     except Exception as e:
         st.error(f"Unexpected error connecting to MSSQL: {str(e)}")
@@ -222,9 +208,7 @@ def fetch_data(report_date: date) -> pd.DataFrame:
 
 
 def process_data(df: pd.DataFrame, off_technicians: list = None) -> dict:
-    """Aggregate raw labor data into report-ready structures.
-    Supports excluding technicians marked as OFF.
-    """
+    """Aggregate raw labor data into report-ready structures."""
     if df is None or df.empty:
         return {
             "total_hours": 0.0,
@@ -235,7 +219,8 @@ def process_data(df: pd.DataFrame, off_technicians: list = None) -> dict:
             "raw_df": pd.DataFrame(),
             "active_techs": 0,
             "expected_hours": 0.0,
-            "efficiency": 0.0
+            "efficiency": 0.0,
+            "total_techs": 0
         }
 
     if off_technicians is None:
@@ -244,18 +229,15 @@ def process_data(df: pd.DataFrame, off_technicians: list = None) -> dict:
     total_hours = float(df["logged_hours"].sum())
     num_ros = int(df["ro_number"].nunique())
 
-    # Calculate active technicians (excluding those marked OFF)
     all_techs = df["technician"].unique()
     active_techs = [t for t in all_techs if t not in off_technicians]
     num_active_techs = len(active_techs)
 
     avg_per_ro = round(total_hours / num_ros, 2) if num_ros > 0 else 0.0
 
-    # Efficiency calculation (7 expected hours per active technician)
     expected_hours = num_active_techs * 7
     efficiency = round((total_hours / expected_hours * 100), 1) if expected_hours > 0 else 0.0
 
-    # Hours per RO
     hpr = (
         df.groupby(["ro_number", "technician", "department"], dropna=False)
         .agg(
@@ -272,7 +254,6 @@ def process_data(df: pd.DataFrame, off_technicians: list = None) -> dict:
     else:
         hpr["pct_of_total"] = 0.0
 
-    # Hourly breakdown (full 24h for consistent x-axis)
     hour_sum = df.groupby("hour")["logged_hours"].sum().reset_index()
     hour_sum.columns = ["Hour", "Hours Logged"]
     all_hours = pd.DataFrame({"Hour": list(range(24))})
@@ -294,7 +275,6 @@ def process_data(df: pd.DataFrame, off_technicians: list = None) -> dict:
 
 
 def apply_filters(df: pd.DataFrame, selected_techs: list, selected_depts: list) -> pd.DataFrame:
-    """Filter dataframe by selected technicians and departments."""
     if df.empty or (not selected_techs and not selected_depts):
         return df.copy()
     mask = pd.Series([True] * len(df), index=df.index)
@@ -316,9 +296,8 @@ def create_excel_report(
     """Generate professional multi-sheet Excel report."""
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        # === Sheet 1: Executive Summary ===
         summary_rows = [
-            ["DAILY PRODUCTION REPORT", ""],
+            ["DAILY PRODUCTION REPORT v2.0", ""],
             ["Report Generated", datetime.now().strftime("%Y-%m-%d %H:%M")],
             ["Primary Date", str(primary_date)],
             ["Comparison Date", str(comparison_date) if comparison_date else "N/A"],
@@ -328,6 +307,7 @@ def create_excel_report(
             ["Unique Repair Orders (ROs)", filtered_processed["num_ros"]],
             ["Average Hours per RO", filtered_processed["avg_per_ro"]],
             ["Total Labor Entries", len(filtered_raw)],
+            ["Efficiency %", filtered_processed.get("efficiency", 0)],
             ["", ""],
         ]
         if comp_processed:
@@ -347,21 +327,16 @@ def create_excel_report(
         summary_df = pd.DataFrame(summary_rows, columns=["Metric / Section", "Value"])
         summary_df.to_excel(writer, sheet_name="Executive_Summary", index=False)
 
-        # === Sheet 2: Hours per RO ===
         if not filtered_processed["hours_per_ro_df"].empty:
             filtered_processed["hours_per_ro_df"].to_excel(writer, sheet_name="Hours_per_RO", index=False)
 
-        # === Sheet 3: Hourly Monitoring ===
         filtered_processed["hourly_df"].to_excel(writer, sheet_name="Hourly_Monitoring", index=False)
 
-        # === Sheet 4: Raw Labor Logs (Primary) ===
         if not filtered_raw.empty:
-            # Select nice columns for export
             export_cols = ["ro_number", "technician", "department", "logged_hours", "log_timestamp", "hour", "date"]
             cols_to_export = [c for c in export_cols if c in filtered_raw.columns]
             filtered_raw[cols_to_export].to_excel(writer, sheet_name="Raw_Labor_Logs", index=False)
 
-        # === Sheet 5: Comparison (if available) ===
         if comp_processed and comparison_date:
             comp_summary = pd.DataFrame([
                 ["Comparison Date", str(comparison_date)],
@@ -379,13 +354,13 @@ def create_excel_report(
 # MAIN APPLICATION
 # =============================================================================
 def main():
-    # Header
+    # Header - v2.0
     st.markdown("""
     <div class="report-header">
-        <h1 style="margin:0; font-size:2.1rem;">Daily RO Production Report</h1>
+        <h1 style="margin:0; font-size:2.1rem;">Daily RO Production Report <span style="font-size:1.1rem; opacity:0.9;">v2.0</span></h1>
         <p style="margin:8px 0 0 0; opacity:0.95; font-size:1.05rem;">
-            Hours per Repair Order • Hourly Monitoring • Day-over-Day Comparison<br>
-            <span style="font-size:0.9rem;">Connected to DB2 (read-only session)</span>
+            Hours per Repair Order • Hourly Monitoring • Day-over-Day Comparison • Efficiency • Trends • Weekly Tracker<br>
+            <span style="font-size:0.9rem;">Read-only DB2 / RO Writer (MSSQL) • Mock mode ready</span>
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -396,7 +371,7 @@ def main():
         use_mock = st.toggle(
             "Use Mock Data (Demo Mode)",
             value=USE_MOCK_DEFAULT,
-            help="Turn OFF after you configure your real DB2 API key & endpoint"
+            help="Turn OFF after you configure your real MSSQL connection string in secrets.toml"
         )
 
         st.divider()
@@ -434,15 +409,26 @@ def main():
                 "Select technicians who are off today",
                 options=all_techs,
                 default=st.session_state.get("off_technicians", []),
-                help="These technicians will be excluded from efficiency calculations"
+                help="These technicians will be excluded from efficiency calculations (primary day only)"
             )
             st.session_state.off_technicians = off_techs
         else:
             st.session_state.off_technicians = []
             st.caption("Generate a report to select off technicians")
 
+        # v2.0 Trend & Weekly Settings
         st.divider()
-        st.caption("Data is cached for 5 minutes. Click Generate to refresh.")
+        st.subheader("📈 Trends & Weekly Tracker")
+        trend_window = st.selectbox(
+            "Trend Window",
+            options=["7 Days", "30 Days"],
+            index=0,
+            help="How many past days to include in the Trends tab"
+        )
+        st.caption("Weekly Tracker always shows the most recent 7 days")
+
+        st.divider()
+        st.caption("Data cached 5 min. Click Generate to refresh.")
 
     # Generate Button
     col_btn1, col_btn2 = st.columns([3, 1])
@@ -455,22 +441,23 @@ def main():
     with col_btn2:
         if st.button("Clear Cache & Data", use_container_width=True):
             for key in list(st.session_state.keys()):
-                if key.startswith(("primary", "comp", "report")):
+                if key.startswith(("primary", "comp", "report", "historical")):
                     del st.session_state[key]
             st.rerun()
 
     if generate_clicked:
-        with st.spinner(f"Fetching data from {'Mock' if use_mock else 'DB2 API'} for {primary_date}..."):
-            primary_raw = fetch_data(primary_date)
+        with st.spinner(f"Fetching data from {'Mock' if use_mock else 'MSSQL'} for {primary_date}..."):
+            primary_raw = fetch_data(primary_date, use_mock=use_mock)
             comp_raw = pd.DataFrame()
             if do_comparison:
-                comp_raw = fetch_data(comparison_date)
+                comp_raw = fetch_data(comparison_date, use_mock=use_mock)
 
             st.session_state.primary_raw = primary_raw
             st.session_state.primary_date = primary_date
             st.session_state.comparison_date = comparison_date
             st.session_state.do_comparison = do_comparison
             st.session_state.use_mock = use_mock
+            st.session_state.trend_window = trend_window
 
             off_techs = st.session_state.get("off_technicians", [])
 
@@ -486,19 +473,40 @@ def main():
                 st.session_state.comp_processed = None
                 st.session_state.comp_raw = pd.DataFrame()
 
+            # === v2.0: Build historical data for Trends + Weekly Tracker ===
+            num_days = 7 if trend_window == "7 Days" else 30
+            hist_records = []
+            for i in range(num_days):
+                d = primary_date - timedelta(days=i)
+                raw_d = fetch_data(d, use_mock=use_mock)
+                if not raw_d.empty:
+                    # Historical trends ignore today's OFF list (use all techs)
+                    proc_d = process_data(raw_d, off_technicians=[])
+                    hist_records.append({
+                        "date": d,
+                        "total_hours": proc_d["total_hours"],
+                        "num_ros": proc_d["num_ros"],
+                        "efficiency": proc_d["efficiency"],
+                        "active_techs": proc_d["active_techs"],
+                        "avg_per_ro": proc_d["avg_per_ro"]
+                    })
+            if hist_records:
+                st.session_state.historical_df = pd.DataFrame(hist_records).sort_values("date").reset_index(drop=True)
+            else:
+                st.session_state.historical_df = pd.DataFrame()
+
         if primary_raw.empty:
-            st.error("No data returned for the primary date. Check date, API connectivity, or try mock mode.")
+            st.error("No data returned for the primary date. Check date, connection, or try mock mode.")
         else:
             st.success(f"Report ready • {len(primary_raw)} labor entries loaded for {primary_date}")
             st.rerun()
 
-    # Render Report (if data exists in session)
+    # Render Report
     if "primary_processed" in st.session_state and st.session_state.primary_processed is not None:
         primary = st.session_state.primary_processed
         primary_raw = st.session_state.primary_raw
         primary_date = st.session_state.primary_date
 
-        # Apply filters to primary only
         filtered_raw = apply_filters(primary_raw, selected_techs, selected_depts)
         off_techs = st.session_state.get("off_technicians", [])
         filtered_processed = process_data(filtered_raw, off_technicians=off_techs)
@@ -511,7 +519,7 @@ def main():
         comp_str = f" vs {comp_date}" if do_comp and comp_date else ""
         st.subheader(f"Report for {primary_date.strftime('%A, %b %d, %Y')}{comp_str}")
 
-        # KPI Cards
+        # KPI Cards (always visible)
         kpi_cols = st.columns(4)
         kpi_cols[0].metric(
             "Total Logged Hours",
@@ -538,14 +546,11 @@ def main():
                 delta_color="normal"
             )
             if abs(pct) > 20:
-                st.warning(
-                    f"**Significant variance detected** ({pct:+.1f}%). "
-                    "Review staffing, RO complexity, parts availability, or data timing issues."
-                )
+                st.warning(f"**Significant variance detected** ({pct:+.1f}%). Review staffing, RO complexity, parts, or data issues.")
         else:
             kpi_cols[3].metric("Comparison", "Disabled", "Enable in sidebar")
 
-        # Second row - Efficiency & Active Technicians (new OFF feature)
+        # Efficiency row (v2 feature)
         eff = filtered_processed.get("efficiency", 0)
         active = filtered_processed.get("active_techs", 0)
         total_t = filtered_processed.get("total_techs", 0)
@@ -554,24 +559,26 @@ def main():
         eff_cols[0].metric(
             "Efficiency",
             f"{eff}%",
-            help=f"Based on {active} active technicians (OFF techs excluded from calculation)"
+            help=f"Actual Hours ÷ (Active Techs × 7 expected man-hours/day). OFF techs excluded."
         )
         eff_cols[1].metric(
             "Active Technicians",
             f"{active} / {total_t}",
-            help="Technicians working today vs total"
+            help="Technicians working today vs total in data"
         )
 
-        # Tabs
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "Hours per RO",
+        # v2.0 Tabs
+        tab_daily, tab_hourly, tab_trends, tab_compare, tab_weekly, tab_export = st.tabs([
+            "Daily Overview",
             "Hourly Monitoring",
+            "Trends",
             "Day Comparison",
+            "Weekly Tracker",
             "Export & Raw"
         ])
 
-        # TAB 1: Hours per RO
-        with tab1:
+        # TAB: Daily Overview (Hours per RO table)
+        with tab_daily:
             st.markdown("#### Hours Logged per Repair Order (sorted by total hours)")
             hpr_df = filtered_processed["hours_per_ro_df"]
             if not hpr_df.empty:
@@ -583,24 +590,19 @@ def main():
                     column_config={
                         "total_hours": st.column_config.NumberColumn("Total Hours", format="%.2f"),
                         "entries": st.column_config.NumberColumn("# Entries", format="%d"),
-                        "pct_of_total": st.column_config.ProgressColumn(
-                            "% of Day", format="%.1f%%", min_value=0, max_value=100
-                        ),
+                        "pct_of_total": st.column_config.ProgressColumn("% of Day", format="%.1f%%", min_value=0, max_value=100),
                     }
                 )
                 st.caption(f"Showing {len(hpr_df)} ROs • Use column filters in table header for searching/sorting")
 
                 if len(hpr_df) > 0:
                     top = hpr_df.iloc[0]
-                    st.info(
-                        f"**Top RO**: {top['ro_number']} — **{top['total_hours']:.2f} hrs** "
-                        f"({top['pct_of_total']:.1f}% of day) worked by **{top['technician']}** in {top['department']}"
-                    )
+                    st.info(f"**Top RO**: {top['ro_number']} — **{top['total_hours']:.2f} hrs** ({top['pct_of_total']:.1f}% of day) worked by **{top['technician']}** in {top['department']}")
             else:
                 st.info("No RO data matches current filters.")
 
-        # TAB 2: Hourly Monitoring
-        with tab2:
+        # TAB: Hourly Monitoring
+        with tab_hourly:
             st.markdown("#### Logged Hours by Hour of Day")
             hourly = filtered_processed["hourly_df"]
             active = hourly[(hourly["Hours Logged"] > 0) | (hourly["Hour"].between(6, 18))]
@@ -619,7 +621,6 @@ def main():
             peak = hourly.loc[hourly["Hours Logged"].idxmax()]
             st.caption(f"Peak productivity hour: **{int(peak['Hour']):02d}:00** — {peak['Hours Logged']:.1f} hours logged")
 
-            # Comparison overlay if enabled
             if do_comp and comp:
                 st.markdown("#### Hourly Pattern Comparison (Primary vs Benchmark)")
                 comp_hourly = comp["hourly_df"]
@@ -642,10 +643,55 @@ def main():
                 )
                 fig2.update_layout(height=380, xaxis=dict(dtick=1))
                 st.plotly_chart(fig2, use_container_width=True)
-                st.caption("Use this to monitor start times, lunch breaks, end-of-day behavior, or shift handoff issues between the two days.")
+                st.caption("Use this to monitor start times, lunch breaks, end-of-day behavior, or shift handoff issues.")
 
-        # TAB 3: Day Comparison
-        with tab3:
+        # TAB: Trends (NEW v2.0)
+        with tab_trends:
+            st.markdown("### 7 / 30-Day Performance Trends")
+            st.caption("Track total output and team efficiency over time. Target efficiency line at 100%.")
+
+            if "historical_df" in st.session_state and not st.session_state.historical_df.empty:
+                hdf = st.session_state.historical_df.copy()
+
+                # Total Hours Trend
+                fig_hrs = px.line(
+                    hdf,
+                    x="date",
+                    y="total_hours",
+                    title="Total Logged Hours Trend",
+                    markers=True,
+                    labels={"date": "Date", "total_hours": "Total Hours"}
+                )
+                fig_hrs.update_layout(height=320, hovermode="x unified")
+                st.plotly_chart(fig_hrs, use_container_width=True)
+
+                # Efficiency Trend with target line
+                fig_eff = px.line(
+                    hdf,
+                    x="date",
+                    y="efficiency",
+                    title="Efficiency % Trend (Target: 100%)",
+                    markers=True,
+                    labels={"date": "Date", "efficiency": "Efficiency %"}
+                )
+                fig_eff.add_hline(y=100, line_dash="dash", line_color="#28a745", annotation_text="Target 100%", annotation_position="top right")
+                max_eff = max(120, hdf["efficiency"].max() + 10)
+                fig_eff.update_layout(height=320, hovermode="x unified", yaxis=dict(range=[0, max_eff]))
+                st.plotly_chart(fig_eff, use_container_width=True)
+
+                # Summary table
+                st.dataframe(
+                    hdf[["date", "total_hours", "efficiency", "num_ros", "active_techs"]].rename(
+                        columns={"date": "Date", "total_hours": "Hours", "num_ros": "ROs", "active_techs": "Active Techs"}
+                    ),
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.info("Click Generate Report to populate trend data.")
+
+        # TAB: Day Comparison
+        with tab_compare:
             if not do_comp or not comp:
                 st.info("Day-over-day comparison is disabled. Enable the checkbox in the sidebar and regenerate the report.")
             else:
@@ -657,24 +703,9 @@ def main():
                 delta_avg = filtered_processed["avg_per_ro"] - comp["avg_per_ro"]
 
                 summary_data = {
-                    "Metric": [
-                        "Total Logged Hours",
-                        "Unique Repair Orders",
-                        "Average Hours per RO",
-                        "Total Labor Entries"
-                    ],
-                    f"Primary ({primary_date})": [
-                        filtered_processed["total_hours"],
-                        filtered_processed["num_ros"],
-                        filtered_processed["avg_per_ro"],
-                        len(filtered_raw)
-                    ],
-                    f"Benchmark ({comp_date})": [
-                        comp["total_hours"],
-                        comp["num_ros"],
-                        comp["avg_per_ro"],
-                        len(st.session_state.get("comp_raw", pd.DataFrame()))
-                    ],
+                    "Metric": ["Total Logged Hours", "Unique Repair Orders", "Average Hours per RO", "Total Labor Entries"],
+                    f"Primary ({primary_date})": [filtered_processed["total_hours"], filtered_processed["num_ros"], filtered_processed["avg_per_ro"], len(filtered_raw)],
+                    f"Benchmark ({comp_date})": [comp["total_hours"], comp["num_ros"], comp["avg_per_ro"], len(st.session_state.get("comp_raw", pd.DataFrame()))],
                     "Delta": [round(delta_hrs, 1), delta_ros, round(delta_avg, 2), ""],
                     "% Change": [
                         f"{pct_hrs:+.1f}%",
@@ -685,37 +716,85 @@ def main():
                 }
                 st.dataframe(pd.DataFrame(summary_data), use_container_width=True, hide_index=True)
 
-                st.markdown("**How to interpret the comparison:**")
-                st.write("""
-                - **Higher hours/ROs today**: More work completed, backlog cleared, or higher complexity ROs  
-                - **Lower production**: Check for technician absences, training days, parts delays, or system issues  
-                - **Hourly overlay** (previous tab) often reveals the *when* behind the *how much*
-                """)
+                st.markdown("**How to interpret:** Higher hours/ROs = more work or higher complexity. Lower = check absences, training, parts delays. Check the hourly overlay tab for the *when* behind the numbers.")
 
-        # TAB 4: Export
-        with tab4:
+        # TAB: Weekly Tracker (NEW v2.0 - Excel-style)
+        with tab_weekly:
+            st.markdown("### Weekly Production Tracker")
+            st.caption("Excel-style view with Earned / Goal per day and Hours To Goal. Edit goals for what-if planning. Always shows last 7 days ending on primary date.")
+
+            if "historical_df" in st.session_state and not st.session_state.historical_df.empty:
+                hist = st.session_state.historical_df.copy()
+                week_df = hist.tail(7).copy()  # last 7 days
+
+                # Default daily goal (reasonable shop target; adjust or make sidebar input later)
+                default_goal = 42.0
+
+                week_df["Goal"] = default_goal
+                week_df["Hours To Goal"] = (week_df["Goal"] - week_df["total_hours"]).round(1)
+                week_df["% of Goal"] = (week_df["total_hours"] / week_df["Goal"] * 100).round(1)
+
+                week_df = week_df.rename(columns={
+                    "date": "Date",
+                    "total_hours": "Earned Hours",
+                    "efficiency": "Efficiency %"
+                })
+
+                tracker_cols = ["Date", "Earned Hours", "Goal", "Hours To Goal", "% of Goal", "Efficiency %", "num_ros", "active_techs"]
+                tracker_display = week_df[[c for c in tracker_cols if c in week_df.columns]].copy()
+                tracker_display["Date"] = pd.to_datetime(tracker_display["Date"]).dt.strftime("%a %b %d")
+
+                # Interactive editor (Excel-like)
+                edited_df = st.data_editor(
+                    tracker_display,
+                    column_config={
+                        "Goal": st.column_config.NumberColumn("Daily Goal (hrs)", min_value=0.0, max_value=200.0, step=5.0, format="%.1f"),
+                        "Earned Hours": st.column_config.NumberColumn(format="%.1f"),
+                        "Hours To Goal": st.column_config.NumberColumn(format="%.1f"),
+                        "% of Goal": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=150),
+                        "Efficiency %": st.column_config.NumberColumn(format="%.1f"),
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                    key="weekly_tracker_editor"
+                )
+
+                # Week totals
+                total_earned = edited_df["Earned Hours"].sum()
+                total_goal = edited_df["Goal"].sum()
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Week Total Earned", f"{total_earned:.1f} hrs")
+                col2.metric("Week Total Goal", f"{total_goal:.1f} hrs")
+                col3.metric("Hours To/Over Goal", f"{total_goal - total_earned:+.1f} hrs")
+
+                # Visual comparison
+                fig_week = px.bar(
+                    edited_df,
+                    x="Date",
+                    y=["Earned Hours", "Goal"],
+                    barmode="group",
+                    title="Earned vs Goal by Day (Last 7 Days)",
+                    color_discrete_map={"Earned Hours": "#2E86AB", "Goal": "#A23B72"}
+                )
+                fig_week.update_layout(height=320, barmode="group")
+                st.plotly_chart(fig_week, use_container_width=True)
+
+                st.caption("Tip: Edit any Goal value above — the table and chart update live for planning. Use the Export tab for a permanent multi-sheet Excel record.")
+            else:
+                st.info("Generate a report to populate the Weekly Tracker.")
+
+        # TAB: Export & Raw
+        with tab_export:
             st.markdown("### Download Report Data")
-            st.write("Exports reflect current filters applied to the primary report.")
+            st.write("Exports reflect current filters applied to the primary report. Includes v2.0 efficiency metrics.")
 
             c1, c2 = st.columns(2)
             with c1:
                 csv_ro = filtered_processed["hours_per_ro_df"].to_csv(index=False).encode("utf-8")
-                st.download_button(
-                    "Hours per RO (CSV)",
-                    data=csv_ro,
-                    file_name=f"hours_per_ro_{primary_date}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
+                st.download_button("Hours per RO (CSV)", data=csv_ro, file_name=f"hours_per_ro_{primary_date}.csv", mime="text/csv", use_container_width=True)
 
                 csv_hourly = filtered_processed["hourly_df"].to_csv(index=False).encode("utf-8")
-                st.download_button(
-                    "Hourly Monitoring (CSV)",
-                    data=csv_hourly,
-                    file_name=f"hourly_{primary_date}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
+                st.download_button("Hourly Monitoring (CSV)", data=csv_hourly, file_name=f"hourly_{primary_date}.csv", mime="text/csv", use_container_width=True)
 
             with c2:
                 excel_data = create_excel_report(
@@ -727,9 +806,9 @@ def main():
                     primary_raw=primary_raw
                 )
                 st.download_button(
-                    "Full Multi-Sheet Excel Report",
+                    "Full Multi-Sheet Excel Report (v2.0)",
                     data=excel_data,
-                    file_name=f"Daily_RO_Production_Report_{primary_date}.xlsx",
+                    file_name=f"Daily_RO_Production_Report_v2_{primary_date}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
@@ -742,25 +821,26 @@ def main():
                     st.info("No raw data available.")
 
     else:
-        # Welcome / instructions when no report yet
-        st.info("👈 Configure dates and filters in the sidebar, then click **Generate / Refresh Report** to begin.")
-        with st.expander("How to connect your real DB2 API (read-only)"):
+        st.info("👈 Configure dates, filters, and Trend Window in the sidebar, then click **Generate / Refresh Report** to begin.")
+        with st.expander("How to connect your real RO Writer (MSSQL)"):
             st.markdown("""
-            1. Obtain your API documentation and read-only key from the DB2 / data team.
-            2. Edit the `fetch_data()` function in `app.py` (around line 140) with your endpoint, payload shape, and response parsing.
-            3. Store the key securely in `.streamlit/secrets.toml` (never commit it).
-            4. Set `USE_MOCK_DEFAULT = False`.
-            5. Test with a known good date that has data in DB2.
-            
-            The code includes detailed comments and examples for common API patterns.
+            1. Get your read-only connection string from your DB team.
+            2. Create `.streamlit/secrets.toml` in the `ro_production_dashboard` folder:
+               ```toml
+               [mssql]
+               connection_string = "DRIVER={ODBC Driver 17 for SQL Server};SERVER=your-server;DATABASE=YourROWriterDB;UID=readonly_user;PWD=YourPassword;TrustServerCertificate=yes"
+               ```
+            3. Set `USE_MOCK_DEFAULT = False` at the top of `app.py`.
+            4. Test with a date that has real labor data.
+            5. The query in `fetch_data()` is customizable — adjust table/column names to match your schema.
             """)
 
     # Footer
     st.divider()
     st.caption(
-        "Read-only DB2 session • Data accuracy depends on source system • "
-        "This interface does not write or modify any records • "
-        f"v1.0 • {datetime.now().strftime('%Y-%m-%d')}"
+        "Read-only access only • Data accuracy depends on source system • "
+        "v2.0 • Trends + Weekly Tracker + Efficiency Tracking • "
+        f"{datetime.now().strftime('%Y-%m-%d')}"
     )
 
 
