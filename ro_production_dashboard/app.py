@@ -320,50 +320,108 @@ def create_excel_report(
     comparison_date: date | None,
     primary_raw: pd.DataFrame
 ) -> bytes:
-    """Generate professional multi-sheet Excel report."""
+    """Generate a clean, professional multi-sheet Excel report."""
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils.dataframe import dataframe_to_rows
+    from openpyxl.utils import get_column_letter
+
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        wb = writer.book
+
+        # Styles
+        header_fill = PatternFill(start_color="2E86AB", end_color="2E86AB", fill_type="solid")
+        header_font = Font(bold=True, color="FFFFFF", size=11)
+        section_fill = PatternFill(start_color="1f4e79", end_color="1f4e79", fill_type="solid")
+        section_font = Font(bold=True, color="FFFFFF", size=12)
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+
+        # === Sheet 1: Executive Summary (nicer formatting) ===
         summary_rows = [
             ["DAILY PRODUCTION REPORT v2.0", ""],
             ["Report Generated", datetime.now().strftime("%Y-%m-%d %H:%M")],
             ["Primary Date", str(primary_date)],
             ["Comparison Date", str(comparison_date) if comparison_date else "N/A"],
             ["", ""],
-            ["PRIMARY (FILTERED VIEW)", ""],
-            ["Total Logged Hours", filtered_processed["total_hours"]],
-            ["Unique Repair Orders (ROs)", filtered_processed["num_ros"]],
-            ["Average Hours per RO", filtered_processed["avg_per_ro"]],
-            ["Total Labor Entries", len(filtered_raw)],
-            ["Efficiency %", filtered_processed.get("efficiency", 0)],
-            ["", ""],
         ]
         if comp_processed:
             delta_hrs = filtered_processed["total_hours"] - comp_processed["total_hours"]
             pct_change = (delta_hrs / comp_processed["total_hours"] * 100) if comp_processed["total_hours"] > 0 else 0
             summary_rows.extend([
+                ["PRIMARY DAY", ""],
+                ["Total Logged Hours", filtered_processed["total_hours"]],
+                ["Unique Repair Orders", filtered_processed["num_ros"]],
+                ["Avg Hours per RO", filtered_processed["avg_per_ro"]],
+                ["Efficiency %", filtered_processed.get("efficiency", 0)],
+                ["", ""],
                 ["COMPARISON DAY", ""],
                 ["Total Logged Hours", comp_processed["total_hours"]],
                 ["Unique ROs", comp_processed["num_ros"]],
-                ["Average Hours per RO", comp_processed["avg_per_ro"]],
+                ["Avg Hours per RO", comp_processed["avg_per_ro"]],
                 ["", ""],
-                ["VARIANCE vs COMPARISON", ""],
+                ["VARIANCE", ""],
                 ["Hours Delta", round(delta_hrs, 1)],
                 ["% Change", f"{pct_change:+.1f}%"],
-                ["RO Count Delta", filtered_processed["num_ros"] - comp_processed["num_ros"]],
             ])
-        summary_df = pd.DataFrame(summary_rows, columns=["Metric / Section", "Value"])
+        else:
+            summary_rows.extend([
+                ["PRIMARY DAY", ""],
+                ["Total Logged Hours", filtered_processed["total_hours"]],
+                ["Unique Repair Orders", filtered_processed["num_ros"]],
+                ["Avg Hours per RO", filtered_processed["avg_per_ro"]],
+                ["Efficiency %", filtered_processed.get("efficiency", 0)],
+            ])
+
+        summary_df = pd.DataFrame(summary_rows, columns=["Metric", "Value"])
         summary_df.to_excel(writer, sheet_name="Executive_Summary", index=False)
 
+        # Format Executive Summary sheet
+        ws = wb["Executive_Summary"]
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=2):
+            for cell in row:
+                cell.border = thin_border
+                if cell.row in [1, 6, 12]:  # Section headers
+                    cell.fill = section_fill
+                    cell.font = section_font
+
+        # Auto column width
+        ws.column_dimensions['A'].width = 28
+        ws.column_dimensions['B'].width = 18
+
+        # === Sheet 2: Hours per RO ===
         if not filtered_processed["hours_per_ro_df"].empty:
             filtered_processed["hours_per_ro_df"].to_excel(writer, sheet_name="Hours_per_RO", index=False)
+            ws = wb["Hours_per_RO"]
+            for cell in ws[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal='center')
+            for col in ws.columns:
+                ws.column_dimensions[get_column_letter(col[0].column)].width = 18
 
+        # === Sheet 3: Hourly Monitoring ===
         filtered_processed["hourly_df"].to_excel(writer, sheet_name="Hourly_Monitoring", index=False)
+        ws = wb["Hourly_Monitoring"]
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
 
+        # === Sheet 4: Raw Labor Logs ===
         if not filtered_raw.empty:
             export_cols = ["ro_number", "technician", "department", "logged_hours", "log_timestamp", "hour", "date"]
             cols_to_export = [c for c in export_cols if c in filtered_raw.columns]
             filtered_raw[cols_to_export].to_excel(writer, sheet_name="Raw_Labor_Logs", index=False)
+            ws = wb["Raw_Labor_Logs"]
+            for cell in ws[1]:
+                cell.fill = header_fill
+                cell.font = header_font
 
+        # === Sheet 5: Comparison (if exists) ===
         if comp_processed and comparison_date:
             comp_summary = pd.DataFrame([
                 ["Comparison Date", str(comparison_date)],
@@ -458,15 +516,14 @@ def main():
         st.caption("Data cached 5 min. Click Generate to refresh.")
 
     # Generate Button
-    col_btn1, col_btn2 = st.columns([3, 1])
+    col_btn1, col_btn2 = st.columns([2, 1])
     with col_btn1:
         generate_clicked = st.button(
             "Generate / Refresh Report",
-            type="primary",
-            use_container_width=True
+            use_container_width=False
         )
     with col_btn2:
-        if st.button("Clear Cache & Data", use_container_width=True):
+        if st.button("Clear Cache & Data"):
             for key in list(st.session_state.keys()):
                 if key.startswith(("primary", "comp", "report", "historical")):
                     del st.session_state[key]
