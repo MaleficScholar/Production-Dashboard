@@ -1,4 +1,4 @@
-# Daily RO Production Report Dashboard v2.0
+# Daily RO Production Report Dashboard Beta 1.3.2
 
 A professional Streamlit web interface for monitoring daily production in a service/repair environment.  
 It pulls **hours logged per Repair Order (RO)** from **RO Writer (Microsoft SQL Server)** using a read-only connection, generates a daily production report, provides hourly monitoring, efficiency tracking, 7/30-day trends, and a Weekly Production Tracker.

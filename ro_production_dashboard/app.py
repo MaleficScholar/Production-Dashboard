@@ -401,7 +401,7 @@ def create_excel_report(
 
         # === Sheet 1: Executive Summary ===
         summary_rows = [
-            ["DAILY PRODUCTION REPORT v2.0", ""],
+            ["DAILY PRODUCTION REPORT Beta 1.3.2", ""],
             ["Report Generated", datetime.now().strftime("%Y-%m-%d %H:%M")],
             ["Primary Date", str(primary_date)],
             ["Comparison Date", str(comparison_date) if comparison_date else "N/A"],
@@ -495,10 +495,10 @@ def create_excel_report(
 # MAIN APPLICATION
 # =============================================================================
 def main():
-    # Header - v2.0
+    # Header - Beta 1.3.2
     st.markdown("""
     <div class="report-header">
-        <h1 style="margin:0; font-size:2.1rem;">Daily RO Production Report <span style="font-size:1.1rem; opacity:0.9;">v2.0</span></h1>
+        <h1 style="margin:0; font-size:2.1rem;">Daily RO Production Report <span style="font-size:1.1rem; opacity:0.9;">Beta 1.3.2</span></h1>
         <p style="margin:8px 0 0 0; opacity:0.95; font-size:1.05rem;">
             Hours per Repair Order • Hourly Monitoring • Day-over-Day Comparison • Efficiency • Trends • Weekly Tracker<br>
             <span style="font-size:0.9rem;">Read-only DB2 / RO Writer (MSSQL) • Mock mode ready</span>
@@ -557,7 +557,7 @@ def main():
             st.session_state.off_technicians = []
             st.caption("Generate a report to select off technicians")
 
-        # v2.0 Trend & Weekly Settings
+        # Beta 1.3.2 Trend & Weekly Settings
         st.divider()
         st.subheader("📈 Trends & Weekly Tracker")
         trend_window = st.selectbox(
@@ -613,7 +613,7 @@ def main():
                 st.session_state.comp_processed = None
                 st.session_state.comp_raw = pd.DataFrame()
 
-            # === v2.0: Build historical data for Trends + Weekly Tracker ===
+            # === Beta 1.3.2: Build historical data for Trends + Weekly Tracker ===
             num_days = 7 if trend_window == "7 Days" else 30
             hist_records = []
             for i in range(num_days):
@@ -939,9 +939,9 @@ def main():
                     primary_raw=primary_raw
                 )
                 st.download_button(
-                    "Full Multi-Sheet Excel Report (v2.0)",
+                    "Full Multi-Sheet Excel Report (Beta 1.3.2)",
                     data=excel_data,
-                    file_name=f"Daily_RO_Production_Report_v2_{primary_date}.xlsx",
+                    file_name=f"Daily_RO_Production_Report_Beta_1.3.2_{primary_date}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
@@ -973,7 +973,7 @@ def main():
     st.divider()
     st.caption(
         "Read-only access only • Data accuracy depends on source system • "
-        "v2.0 • Trends + Weekly Tracker + Efficiency Tracking + Flexible Column Mapping • "
+        "Beta 1.3.2 • Trends + Weekly Tracker + Efficiency Tracking + Flexible Column Mapping • "
         f"© 2026 https://github.com/MaleficScholar • {datetime.now().strftime('%Y-%m-%d')}"
     )
 
