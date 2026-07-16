@@ -516,15 +516,14 @@ def main():
         st.caption("Data cached 5 min. Click Generate to refresh.")
 
     # Generate Button
-    col_btn1, col_btn2 = st.columns([3, 1])
+    col_btn1, col_btn2 = st.columns([2, 1])
     with col_btn1:
         generate_clicked = st.button(
             "Generate / Refresh Report",
-            type="primary",
-            use_container_width=True
+            use_container_width=False
         )
     with col_btn2:
-        if st.button("Clear Cache & Data", use_container_width=True):
+        if st.button("Clear Cache & Data"):
             for key in list(st.session_state.keys()):
                 if key.startswith(("primary", "comp", "report", "historical")):
                     del st.session_state[key]

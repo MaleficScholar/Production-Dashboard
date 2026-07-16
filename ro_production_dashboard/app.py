@@ -25,9 +25,9 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
-        "Get Help": "https://github.com/your-org/ro-dashboard",
+        "Get Help": "https://github.com/MaleficScholar/Production-Dashboard/commits/main/",
         "Report a bug": None,
-        "About": "Internal tool • Read-only DB2/MSSQL API • v2.0 with Trends & Weekly Tracker"
+        "About": "© 2026 MaleficScholar • https://github.com/MaleficScholar"
     }
 )
 
@@ -924,7 +924,7 @@ def main():
     st.caption(
         "Read-only access only • Data accuracy depends on source system • "
         "v2.0 • Trends + Weekly Tracker + Efficiency Tracking • "
-        f"{datetime.now().strftime('%Y-%m-%d')}"
+        f"© 2026 https://github.com/MaleficScholar • v2.0 • {datetime.now().strftime('%Y-%m-%d')}"
     )
 
 
