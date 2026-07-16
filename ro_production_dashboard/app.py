@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-Daily RO Production Report Dashboard v2.0
+Daily RO Production Report Dashboard Beta 1.3.2
 Streamlit web interface for DB2 / RO Writer (MSSQL) read-only access
 Pulls hours per RO, hourly monitoring, day-over-day comparison, efficiency tracking,
 7/30-day trends, and weekly production tracker (Excel-style Earned/Goal)
+
+Includes flexible column normalization so different RO Writer schemas still work.
 """
 
 import streamlit as st
@@ -148,10 +150,87 @@ def generate_mock_data(report_date: date) -> pd.DataFrame:
     return df
 
 
+def normalize_columns(df: pd.DataFrame, report_date: date) -> pd.DataFrame:
+    """
+    Map whatever column names came back from SQL into the internal
+    names the rest of the application expects.
+    Missing columns receive safe defaults so the report never hard-crashes.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    # Build a lower-case lookup of the original columns
+    lower_map = {str(c).lower().strip().replace(" ", "_"): c for c in df.columns}
+
+    def find_col(candidates):
+        for cand in candidates:
+            if cand in lower_map:
+                return lower_map[cand]
+        return None
+
+    # Common real-world names found in RO Writer / labor systems
+    ro_col = find_col([
+        "ro_number", "ro_num", "repair_order", "repair_order_id", "ro", "ro#", "ro_id", "rono"
+    ])
+    tech_col = find_col([
+        "technician", "technician_name", "tech", "tech_name", "employee", "employee_name",
+        "mechanic", "tech_id", "user_name", "emp_name"
+    ])
+    hours_col = find_col([
+        "logged_hours", "hours", "labor_hours", "time_hours", "hours_worked",
+        "qty", "quantity", "hoursqty", "labor_qty"
+    ])
+    time_col = find_col([
+        "log_timestamp", "start_time", "start_datetime", "clock_in", "time_in",
+        "work_time", "entry_time", "timestamp", "date_time", "tran_time"
+    ])
+    dept_col = find_col([
+        "department", "dept", "work_center", "bay", "shop", "location", "cost_center", "wc"
+    ])
+
+    out = pd.DataFrame(index=df.index)
+
+    # ro_number
+    if ro_col is not None:
+        out["ro_number"] = df[ro_col].astype(str)
+    else:
+        out["ro_number"] = "UNKNOWN"
+
+    # technician
+    if tech_col is not None:
+        out["technician"] = df[tech_col].astype(str)
+    else:
+        out["technician"] = "Unknown Tech"
+
+    # logged_hours
+    if hours_col is not None:
+        out["logged_hours"] = pd.to_numeric(df[hours_col], errors="coerce").fillna(0.0)
+    else:
+        out["logged_hours"] = 0.0
+
+    # timestamp + hour
+    if time_col is not None:
+        out["log_timestamp"] = pd.to_datetime(df[time_col], errors="coerce")
+        out["hour"] = out["log_timestamp"].dt.hour.fillna(12).astype(int)
+    else:
+        out["log_timestamp"] = pd.NaT
+        out["hour"] = 12
+
+    # department
+    if dept_col is not None:
+        out["department"] = df[dept_col].astype(str)
+    else:
+        out["department"] = "General"
+
+    out["date"] = report_date
+    return out
+
+
 def fetch_data(report_date: date, use_mock: bool | None = None) -> pd.DataFrame:
     """
     Fetch labor data for a given date.
     Supports direct Microsoft SQL Server (RO Writer) or Mock data.
+    Columns are normalized so different schemas still work.
     """
     effective_mock = use_mock if use_mock is not None else USE_MOCK_DEFAULT
 
@@ -175,6 +254,11 @@ def fetch_data(report_date: date, use_mock: bool | None = None) -> pd.DataFrame:
         conn = pyodbc.connect(conn_str, timeout=30)
         cursor = conn.cursor()
 
+        # ---------------------------------------------------------------
+        # CUSTOMIZE THIS QUERY to match your actual RO Writer tables.
+        # The normalize_columns() function will map the returned names
+        # into the internal structure the rest of the app expects.
+        # ---------------------------------------------------------------
         query = """
             SELECT 
                 ro_number,
@@ -191,39 +275,15 @@ def fetch_data(report_date: date, use_mock: bool | None = None) -> pd.DataFrame:
         rows = cursor.fetchall()
 
         if not rows:
+            conn.close()
             return pd.DataFrame()
 
         columns = [column[0] for column in cursor.description]
-        df = pd.DataFrame.from_records(rows, columns=columns)
+        raw_df = pd.DataFrame.from_records(rows, columns=columns)
         conn.close()
 
-        column_map = {
-            "ro_num": "ro_number",
-            "repair_order_id": "ro_number",
-            "tech": "technician",
-            "tech_name": "technician",
-            "employee_name": "technician",
-            "dept": "department",
-            "work_center": "department",
-            "hours": "logged_hours",
-            "labor_hours": "logged_hours",
-            "start_time": "log_timestamp",
-            "start_datetime": "log_timestamp",
-        }
-        df = df.rename(columns={k: v for k, v in column_map.items() if k in df.columns})
-
-        if "ro_number" not in df.columns or "technician" not in df.columns or "logged_hours" not in df.columns:
-            st.error("Required columns missing from MSSQL query result. Adjust the query in fetch_data().")
-            return pd.DataFrame()
-
-        df["logged_hours"] = pd.to_numeric(df["logged_hours"], errors="coerce").fillna(0)
-        if "log_timestamp" in df.columns:
-            df["log_timestamp"] = pd.to_datetime(df["log_timestamp"], errors="coerce")
-            df["hour"] = df["log_timestamp"].dt.hour.fillna(12).astype(int)
-        else:
-            df["hour"] = 12
-
-        df["date"] = report_date
+        # Flexible normalization – this is the key robustness improvement
+        df = normalize_columns(raw_df, report_date)
         return df
 
     except pyodbc.Error as e:
@@ -322,14 +382,12 @@ def create_excel_report(
 ) -> bytes:
     """Generate a clean, professional multi-sheet Excel report."""
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-    from openpyxl.utils.dataframe import dataframe_to_rows
     from openpyxl.utils import get_column_letter
 
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         wb = writer.book
 
-        # Styles
         header_fill = PatternFill(start_color="2E86AB", end_color="2E86AB", fill_type="solid")
         header_font = Font(bold=True, color="FFFFFF", size=11)
         section_fill = PatternFill(start_color="1f4e79", end_color="1f4e79", fill_type="solid")
@@ -341,7 +399,7 @@ def create_excel_report(
             bottom=Side(style='thin')
         )
 
-        # === Sheet 1: Executive Summary (nicer formatting) ===
+        # === Sheet 1: Executive Summary ===
         summary_rows = [
             ["DAILY PRODUCTION REPORT v2.0", ""],
             ["Report Generated", datetime.now().strftime("%Y-%m-%d %H:%M")],
@@ -380,16 +438,14 @@ def create_excel_report(
         summary_df = pd.DataFrame(summary_rows, columns=["Metric", "Value"])
         summary_df.to_excel(writer, sheet_name="Executive_Summary", index=False)
 
-        # Format Executive Summary sheet
         ws = wb["Executive_Summary"]
         for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=2):
             for cell in row:
                 cell.border = thin_border
-                if cell.row in [1, 6, 12]:  # Section headers
+                if cell.row in [1, 6, 12]:
                     cell.fill = section_fill
                     cell.font = section_font
 
-        # Auto column width
         ws.column_dimensions['A'].width = 28
         ws.column_dimensions['B'].width = 18
 
@@ -421,7 +477,7 @@ def create_excel_report(
                 cell.fill = header_fill
                 cell.font = header_font
 
-        # === Sheet 5: Comparison (if exists) ===
+        # === Sheet 5: Comparison ===
         if comp_processed and comparison_date:
             comp_summary = pd.DataFrame([
                 ["Comparison Date", str(comparison_date)],
@@ -564,7 +620,7 @@ def main():
                 d = primary_date - timedelta(days=i)
                 raw_d = fetch_data(d, use_mock=use_mock)
                 if not raw_d.empty:
-                    # Historical trends ignore today's OFF list (use all techs)
+                    # Historical trends ignore today's OFF list
                     proc_d = process_data(raw_d, off_technicians=[])
                     hist_records.append({
                         "date": d,
@@ -603,7 +659,7 @@ def main():
         comp_str = f" vs {comp_date}" if do_comp and comp_date else ""
         st.subheader(f"Report for {primary_date.strftime('%A, %b %d, %Y')}{comp_str}")
 
-        # KPI Cards (always visible)
+        # KPI Cards
         kpi_cols = st.columns(4)
         kpi_cols[0].metric(
             "Total Logged Hours",
@@ -634,7 +690,7 @@ def main():
         else:
             kpi_cols[3].metric("Comparison", "Disabled", "Enable in sidebar")
 
-        # Efficiency row (v2 feature)
+        # Efficiency row
         eff = filtered_processed.get("efficiency", 0)
         active = filtered_processed.get("active_techs", 0)
         total_t = filtered_processed.get("total_techs", 0)
@@ -643,7 +699,7 @@ def main():
         eff_cols[0].metric(
             "Efficiency",
             f"{eff}%",
-            help=f"Actual Hours ÷ (Active Techs × 7 expected man-hours/day). OFF techs excluded."
+            help="Actual Hours ÷ (Active Techs × 7 expected man-hours/day). OFF techs excluded."
         )
         eff_cols[1].metric(
             "Active Technicians",
@@ -651,7 +707,7 @@ def main():
             help="Technicians working today vs total in data"
         )
 
-        # v2.0 Tabs
+        # Tabs
         tab_daily, tab_hourly, tab_trends, tab_compare, tab_weekly, tab_export = st.tabs([
             "Daily Overview",
             "Hourly Monitoring",
@@ -661,7 +717,7 @@ def main():
             "Export & Raw"
         ])
 
-        # TAB: Daily Overview (Hours per RO table)
+        # TAB: Daily Overview
         with tab_daily:
             st.markdown("#### Hours Logged per Repair Order (sorted by total hours)")
             hpr_df = filtered_processed["hours_per_ro_df"]
@@ -729,7 +785,7 @@ def main():
                 st.plotly_chart(fig2, use_container_width=True)
                 st.caption("Use this to monitor start times, lunch breaks, end-of-day behavior, or shift handoff issues.")
 
-        # TAB: Trends (NEW v2.0)
+        # TAB: Trends
         with tab_trends:
             st.markdown("### 7 / 30-Day Performance Trends")
             st.caption("Track total output and team efficiency over time. Target efficiency line at 100%.")
@@ -737,7 +793,6 @@ def main():
             if "historical_df" in st.session_state and not st.session_state.historical_df.empty:
                 hdf = st.session_state.historical_df.copy()
 
-                # Total Hours Trend
                 fig_hrs = px.line(
                     hdf,
                     x="date",
@@ -749,7 +804,6 @@ def main():
                 fig_hrs.update_layout(height=320, hovermode="x unified")
                 st.plotly_chart(fig_hrs, use_container_width=True)
 
-                # Efficiency Trend with target line
                 fig_eff = px.line(
                     hdf,
                     x="date",
@@ -758,12 +812,12 @@ def main():
                     markers=True,
                     labels={"date": "Date", "efficiency": "Efficiency %"}
                 )
-                fig_eff.add_hline(y=100, line_dash="dash", line_color="#28a745", annotation_text="Target 100%", annotation_position="top right")
+                fig_eff.add_hline(y=100, line_dash="dash", line_color="#28a745",
+                                 annotation_text="Target 100%", annotation_position="top right")
                 max_eff = max(120, hdf["efficiency"].max() + 10)
                 fig_eff.update_layout(height=320, hovermode="x unified", yaxis=dict(range=[0, max_eff]))
                 st.plotly_chart(fig_eff, use_container_width=True)
 
-                # Summary table
                 st.dataframe(
                     hdf[["date", "total_hours", "efficiency", "num_ros", "active_techs"]].rename(
                         columns={"date": "Date", "total_hours": "Hours", "num_ros": "ROs", "active_techs": "Active Techs"}
@@ -802,18 +856,16 @@ def main():
 
                 st.markdown("**How to interpret:** Higher hours/ROs = more work or higher complexity. Lower = check absences, training, parts delays. Check the hourly overlay tab for the *when* behind the numbers.")
 
-        # TAB: Weekly Tracker (NEW v2.0 - Excel-style)
+        # TAB: Weekly Tracker
         with tab_weekly:
             st.markdown("### Weekly Production Tracker")
             st.caption("Excel-style view with Earned / Goal per day and Hours To Goal. Edit goals for what-if planning. Always shows last 7 days ending on primary date.")
 
             if "historical_df" in st.session_state and not st.session_state.historical_df.empty:
                 hist = st.session_state.historical_df.copy()
-                week_df = hist.tail(7).copy()  # last 7 days
+                week_df = hist.tail(7).copy()
 
-                # Default daily goal (reasonable shop target; adjust or make sidebar input later)
                 default_goal = 42.0
-
                 week_df["Goal"] = default_goal
                 week_df["Hours To Goal"] = (week_df["Goal"] - week_df["total_hours"]).round(1)
                 week_df["% of Goal"] = (week_df["total_hours"] / week_df["Goal"] * 100).round(1)
@@ -828,7 +880,6 @@ def main():
                 tracker_display = week_df[[c for c in tracker_cols if c in week_df.columns]].copy()
                 tracker_display["Date"] = pd.to_datetime(tracker_display["Date"]).dt.strftime("%a %b %d")
 
-                # Interactive editor (Excel-like)
                 edited_df = st.data_editor(
                     tracker_display,
                     column_config={
@@ -843,7 +894,6 @@ def main():
                     key="weekly_tracker_editor"
                 )
 
-                # Week totals
                 total_earned = edited_df["Earned Hours"].sum()
                 total_goal = edited_df["Goal"].sum()
                 col1, col2, col3 = st.columns(3)
@@ -851,7 +901,6 @@ def main():
                 col2.metric("Week Total Goal", f"{total_goal:.1f} hrs")
                 col3.metric("Hours To/Over Goal", f"{total_goal - total_earned:+.1f} hrs")
 
-                # Visual comparison
                 fig_week = px.bar(
                     edited_df,
                     x="Date",
@@ -863,14 +912,14 @@ def main():
                 fig_week.update_layout(height=320, barmode="group")
                 st.plotly_chart(fig_week, use_container_width=True)
 
-                st.caption("Tip: Edit any Goal value above — the table and chart update live for planning. Use the Export tab for a permanent multi-sheet Excel record.")
+                st.caption("Tip: Edit any Goal value above — the table and chart update live for planning.")
             else:
                 st.info("Generate a report to populate the Weekly Tracker.")
 
         # TAB: Export & Raw
         with tab_export:
             st.markdown("### Download Report Data")
-            st.write("Exports reflect current filters applied to the primary report. Includes v2.0 efficiency metrics.")
+            st.write("Exports reflect current filters applied to the primary report.")
 
             c1, c2 = st.columns(2)
             with c1:
@@ -917,14 +966,15 @@ def main():
             3. Set `USE_MOCK_DEFAULT = False` at the top of `app.py`.
             4. Test with a date that has real labor data.
             5. The query in `fetch_data()` is customizable — adjust table/column names to match your schema.
+               The new `normalize_columns()` function will map whatever names come back into the internal structure.
             """)
 
     # Footer
     st.divider()
     st.caption(
         "Read-only access only • Data accuracy depends on source system • "
-        "v2.0 • Trends + Weekly Tracker + Efficiency Tracking • "
-        f"© 2026 https://github.com/MaleficScholar • v2.0 • {datetime.now().strftime('%Y-%m-%d')}"
+        "v2.0 • Trends + Weekly Tracker + Efficiency Tracking + Flexible Column Mapping • "
+        f"© 2026 https://github.com/MaleficScholar • {datetime.now().strftime('%Y-%m-%d')}"
     )
 
 
