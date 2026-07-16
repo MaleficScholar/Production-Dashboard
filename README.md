@@ -39,10 +39,10 @@ Connecting to RO Writer (MSSQL)
 Install Microsoft ODBC Driver 17 or 18 for SQL Server.
 Create a read-only SQL login.
 Create .streamlit/secrets.toml:
-
+```
 toml[mssql]
 connection_string = "DRIVER={ODBC Driver 17 for SQL Server};SERVER=your-server;DATABASE=YourROWriterDB;UID=readonly_user;PWD=YourPassword;TrustServerCertificate=yes"
-
+```
 In app.py set:
 
 PythonUSE_MOCK_DEFAULT = False
