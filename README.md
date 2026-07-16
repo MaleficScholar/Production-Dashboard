@@ -50,8 +50,9 @@ PythonUSE_MOCK_DEFAULT = False
 Adjust the SQL query inside fetch_data() to match your actual RO Writer table/column names.
 
 
-Project Structure
-text├── ro_production_dashboard/     # Streamlit backend (main application)
+## Project Structure
+```
+├── ro_production_dashboard/     # Streamlit backend (main application)
 │   ├── app.py
 │   ├── requirements.txt
 │   └── .streamlit/
@@ -59,7 +60,7 @@ text├── ro_production_dashboard/     # Streamlit backend (main application
 │   └── index.html
 ├── LICENSE                      # Attribution-required license
 └── README.md
-
+```
 License
 This project uses an Attribution-Required License.
 You may use, modify, and redistribute the code, but you must keep visible credit:
