@@ -21,6 +21,25 @@ A lightweight, browser-based dashboard that turns raw RO Writer labor data into 
 Everything is **read-only**. The application never writes to the database.
 
 ---
+## System Requirements (Summary)
+
+**Runtime**
+- Python 3.10, 3.11, or 3.12
+- Microsoft ODBC Driver 17 or 18 for SQL Server
+- Packages: `streamlit`, `pandas`, `numpy`, `plotly`, `openpyxl`, `pyodbc` (see `requirements.txt`)
+
+**Host**
+- Windows Server 2019/2022 (preferred) or Ubuntu 22.04+
+- 2–4 CPU cores, 4–8 GB RAM
+
+**Database Access**
+- Read-only SQL login to the RO Writer Microsoft SQL Server instance
+- SELECT permission only on labor/time-entry tables (or a dedicated view)
+- Required columns: `ro_number`, `technician`, `logged_hours`, `work_date`, plus timestamp/hour if available
+- Network reachability to SQL Server (default port 1433)
+
+**Important**
+- The application is strictly read-only. No schema changes, no write permissions, no agents installed on the database server.
 
 ## Quick Start (Demo Mode)
 
