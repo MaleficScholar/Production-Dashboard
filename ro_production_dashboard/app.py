@@ -736,8 +736,6 @@ def main():
                 f"{pct:+.1f}%",
                 delta_color="normal"
             )
-            if abs(pct) > 20:
-                st.warning(f"**Significant variance detected** ({pct:+.1f}%). Review staffing, RO complexity, parts, or data issues.")
         else:
             kpi_cols[3].metric("Comparison", "Disabled", "Enable in sidebar")
 
