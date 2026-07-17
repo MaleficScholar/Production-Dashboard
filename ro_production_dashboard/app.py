@@ -106,7 +106,9 @@ st.markdown("""
 # =============================================================================
 USE_MOCK_DEFAULT = True          # Set to False in production after configuring real MSSQL connection
 API_BASE_URL = "https://api.yourcompany.com/db2/v1"  # legacy / optional
-DEFAULT_EXPECTED_HOURS_PER_TECH = 7.0  # default; users can override in sidebar for what-if
+DEFAULT_EXPECTED_HOURS_PER_TECH = 7.0   # default; users can override in sidebar for what-if
+DEFAULT_DAILY_GOAL = 35.0                   # default daily goal for Weekly Production Tracker (user requested 35 hrs)
+DEFAULT_WEEKLY_TARGET_PCT = 85.0              # default % of Goal considered "on target" (editable in sidebar)
 
 try:
     API_KEY = st.secrets["db2"]["api_key"]
@@ -605,6 +607,29 @@ def main():
         )
         st.session_state.expected_hours_per_tech = expected_hours_per_tech
 
+        # Weekly Production Tracker default goal (configurable)
+        st.subheader("Weekly Goal")
+        daily_goal = st.number_input(
+            "Default daily goal (hours)",
+            min_value=10.0,
+            max_value=80.0,
+            value=DEFAULT_DAILY_GOAL,
+            step=1.0,
+            help="This becomes the default 'Goal' column in the Weekly Production Tracker. You can still edit individual days in the table."
+        )
+        st.session_state.daily_goal = daily_goal
+
+        # Weekly target % (editable, default 85%)
+        weekly_target_pct = st.number_input(
+            "Weekly target % of goal",
+            min_value=50.0,
+            max_value=120.0,
+            value=DEFAULT_WEEKLY_TARGET_PCT,
+            step=5.0,
+            help="What % of the daily Goal counts as 'on target'. Used to calculate Target Hours in the Weekly Tracker."
+        )
+        st.session_state.weekly_target_pct = weekly_target_pct
+
         # Trends & Weekly Tracker Settings
         st.divider()
         st.subheader("📈 Trends & Weekly Tracker")
@@ -914,10 +939,14 @@ def main():
                 hist = st.session_state.historical_df.copy()
                 week_df = hist.tail(7).copy()
 
-                default_goal = 42.0
+                default_goal = st.session_state.get("daily_goal", DEFAULT_DAILY_GOAL)
+                target_pct = st.session_state.get("weekly_target_pct", DEFAULT_WEEKLY_TARGET_PCT)
+
                 week_df["Goal"] = default_goal
-                week_df["Hours To Goal"] = (week_df["Goal"] - week_df["total_hours"]).round(1)
+                week_df["Target Hours"] = (week_df["Goal"] * target_pct / 100).round(1)
+                week_df["Hours To Target"] = (week_df["Target Hours"] - week_df["total_hours"]).round(1)
                 week_df["% of Goal"] = (week_df["total_hours"] / week_df["Goal"] * 100).round(1)
+                week_df["% of Target"] = (week_df["total_hours"] / week_df["Target Hours"] * 100).round(1)
 
                 week_df = week_df.rename(columns={
                     "date": "Date",
@@ -925,7 +954,7 @@ def main():
                     "efficiency": "Efficiency %"
                 })
 
-                tracker_cols = ["Date", "Earned Hours", "Goal", "Hours To Goal", "% of Goal", "Efficiency %", "num_ros", "active_techs"]
+                tracker_cols = ["Date", "Earned Hours", "Goal", "Target Hours", "Hours To Target", "% of Goal", "% of Target", "Efficiency %", "num_ros", "active_techs"]
                 tracker_display = week_df[[c for c in tracker_cols if c in week_df.columns]].copy()
                 tracker_display["Date"] = pd.to_datetime(tracker_display["Date"]).dt.strftime("%a %b %d")
 
@@ -933,9 +962,11 @@ def main():
                     tracker_display,
                     column_config={
                         "Goal": st.column_config.NumberColumn("Daily Goal (hrs)", min_value=0.0, max_value=200.0, step=5.0, format="%.1f"),
+                        "Target Hours": st.column_config.NumberColumn("Target Hours (85% default)", min_value=0.0, max_value=200.0, step=1.0, format="%.1f"),
                         "Earned Hours": st.column_config.NumberColumn(format="%.1f"),
-                        "Hours To Goal": st.column_config.NumberColumn(format="%.1f"),
+                        "Hours To Target": st.column_config.NumberColumn(format="%.1f"),
                         "% of Goal": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=150),
+                        "% of Target": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=150),
                         "Efficiency %": st.column_config.NumberColumn(format="%.1f"),
                     },
                     hide_index=True,
@@ -944,11 +975,11 @@ def main():
                 )
 
                 total_earned = edited_df["Earned Hours"].sum()
-                total_goal = edited_df["Goal"].sum()
+                total_target = edited_df["Target Hours"].sum()
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Week Total Earned", f"{total_earned:.1f} hrs")
-                col2.metric("Week Total Goal", f"{total_goal:.1f} hrs")
-                col3.metric("Hours To/Over Goal", f"{total_goal - total_earned:+.1f} hrs")
+                col2.metric("Week Total Target", f"{total_target:.1f} hrs")
+                col3.metric("Hours To/Over Target", f"{total_target - total_earned:+.1f} hrs")
 
                 fig_week = px.bar(
                     edited_df,
