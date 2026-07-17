@@ -1,26 +1,25 @@
-# Daily RO Production Dashboard Beta 1.3.2
+# Daily RO Production Report Dashboard v2.0-beta
 
-**© 2026 [MaleficScholar](https://github.com/MaleficScholar)**  
-Real-time labor visibility for service & repair operations running **RO Writer (Microsoft SQL Server)**.
+A professional Streamlit web interface for monitoring daily production in a service/repair environment.  
+It pulls **hours logged per Repair Order (RO)** from **RO Writer (Microsoft SQL Server)** using a read-only connection, generates a daily production report, provides hourly monitoring, efficiency tracking, 7/30-day trends, and a Weekly Production Tracker.
+
+**© 2026 [MaleficScholar](https://github.com/MaleficScholar)**
 
 ---
 
-## What This Is
+## Features
 
-A browser-based Streamlit dashboard that turns raw RO Writer labor data into immediate operational intelligence.
-
-### Core Features
-- **Daily Production KPIs** — Total logged hours, unique ROs, average hours per RO, live variance vs comparison day
-- **Hours per RO Breakdown** — Sortable/filterable table by RO, technician, department, with % of day contribution
-- **Hourly Monitoring** — Bar charts of work distribution + day-over-day line overlays
-- **Efficiency Tracking** — Actual Hours ÷ (Active Technicians × 7 expected man-hours/day). OFF technicians can be excluded
-- **7 / 30-Day Trends** — Line charts tracking total hours and efficiency over time
-- **Weekly Production Tracker** — Excel-style view with Earned / Goal per day and Hours-to-Goal (editable)
-- **One-click Exports** — Multi-sheet Excel report + individual CSVs
-- **Full Mock Data Mode** — Fully functional demo with realistic synthetic data (no database required)
-- **Flexible Column Mapping** — Automatically normalizes different RO Writer column names
-
-Everything is **read-only**. The application never writes to the database.
+- **Date selection** for primary report day and optional comparison/benchmark day
+- **Hours per RO table**: Detailed breakdown by RO number, technician, department, with totals, entry counts, and % of day's total
+- **Hourly Monitoring**: Bar charts of logged hours by hour of day + day-over-day line overlays
+- **Day-over-Day Comparison**: Side-by-side KPIs, variance (absolute + %), and hourly pattern comparison
+- **Efficiency Tracking**: Actual Hours ÷ (Active Technicians × configurable expected hours/day, default 7). Sidebar control for what-if. Supports marking technicians as OFF (primary day only).
+- **7 / 30-Day Trends**: Line charts tracking total logged hours and efficiency over time (with 100% target line)
+- **Weekly Production Tracker**: Excel-style view with Earned / Goal per day and Hours-to-Goal (goals are editable live)
+- **Interactive filters**: Technician and department (populated dynamically after first load)
+- **Export**: Individual CSVs + professional multi-sheet Excel report (Executive Summary, Hours per RO, Hourly, Raw Labor Logs, Comparison)
+- **Mock mode**: Fully functional demo with realistic synthetic data — no database connection required
+- **Read-only safe**: Designed exclusively for a read-only SQL login
 
 ---
 
@@ -34,61 +33,64 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Open `http://localhost:8501`  
-Leave **Use Mock Data** turned ON → pick dates → click **Generate / Refresh Report**.
+- App opens at http://localhost:8501
+- Leave **Use Mock Data (Demo Mode)** turned ON
+- Pick dates → click **Generate / Refresh Report**
+- Explore all tabs (Daily Overview, Hourly Monitoring, Trends, Day Comparison, Weekly Tracker, Export)
 
 ---
 
 ## Connecting to RO Writer (Microsoft SQL Server)
 
-1. Install **Microsoft ODBC Driver 17 or 18** for SQL Server.
-2. Create a **read-only** SQL login.
-3. Create `.streamlit/secrets.toml` inside the `ro_production_dashboard` folder:
+This is the primary supported connection method.
+
+### 1. Install Driver
+```powershell
+pip install pyodbc
+```
+Also install **Microsoft ODBC Driver 17 or 18** for SQL Server (usually pre-installed on Windows).
+
+### 2. Create secrets file
+Create `.streamlit/secrets.toml` inside the `ro_production_dashboard` folder:
 
 ```toml
 [mssql]
 connection_string = "DRIVER={ODBC Driver 17 for SQL Server};SERVER=your-server;DATABASE=YourROWriterDB;UID=readonly_user;PWD=YourPassword;TrustServerCertificate=yes"
 ```
 
-4. In `app.py` set:
-```python
-USE_MOCK_DEFAULT = False
-```
+Use a dedicated **read-only** SQL login.
 
-5. Customize the SQL query inside `fetch_data()` to match your actual RO Writer table and column names.
+### 3. Configure app.py
+- Set `USE_MOCK_DEFAULT = False`
+- Customize the SQL query inside `fetch_data()` so the table and column names match your RO Writer schema.
+
+### 4. Test
+Turn off mock mode and generate a report for a date that contains real labor data.
+
+---
+
+## Assumed Data Model
+
+The application expects (or maps to) rows with these logical columns:
+
+| Column              | Required     | Purpose                                      |
+|---------------------|--------------|----------------------------------------------|
+| `ro_number`         | Yes          | Unique Repair Order identifier               |
+| `technician`        | Yes          | Person who logged the time                   |
+| `logged_hours`      | Yes          | Hours for that labor line                    |
+| `work_date`         | Yes          | Used to filter the selected day              |
+| `log_timestamp` / start_time | Strongly preferred | Needed for accurate hourly charts     |
+| `department`        | Preferred    | Used for filters and grouping                |
 
 ---
 
 ## System Requirements (Summary)
 
-**Runtime**
-- Python 3.10 / 3.11 / 3.12
-- Microsoft ODBC Driver 17 or 18
-- Packages listed in `requirements.txt`
-
-**Host**
-- Windows Server 2019/2022 (preferred) or Ubuntu 22.04+
-- 2–4 CPU cores, 4–8 GB RAM
-
-**Database Access**
-- Read-only SQL login only
-- Required logical columns: `ro_number`, `technician`, `logged_hours`, `work_date` (+ timestamp preferred)
-- Network access to SQL Server (default port 1433)
-
----
-
-## Project Structure
-
-```
-├── ro_production_dashboard/     # Main Streamlit application
-│   ├── app.py
-│   ├── requirements.txt
-│   └── .streamlit/
-├── ro_dashboard_frontend/       # Optional static HTML frontend
-│   └── index.html
-├── LICENSE
-└── README.md
-```
+- **Python**: 3.10 / 3.11 / 3.12
+- **ODBC Driver**: Microsoft ODBC Driver 17 or 18
+- **Key packages**: `streamlit`, `pandas`, `numpy`, `plotly`, `openpyxl`, `pyodbc` (see `requirements.txt`)
+- **Host**: Windows Server 2019/2022 preferred, or Ubuntu 22.04+ (2–4 cores, 4–8 GB RAM)
+- **Database**: Read-only SQL login only — no write permissions and no schema changes
 
 ---
 
@@ -106,6 +108,30 @@ in the application footer, about screen, and documentation.
 Removing or hiding the credit is a license violation.
 
 See the [LICENSE](LICENSE) file for full terms.
+
+---
+
+## Deployment (v2.0 additions)
+
+### Containerized (recommended for consistency)
+- `Dockerfile` and `docker-compose.yml` included.
+- Builds with Microsoft ODBC Driver 18 on Ubuntu 24.04 base.
+- Run: `docker compose up --build`
+- Mount your real `.streamlit/secrets.toml` at runtime (never bake creds in image).
+- For production: put behind reverse proxy (nginx/Caddy) for TLS + auth, bind Streamlit to localhost only, run under dedicated service account.
+
+### Traditional (Windows Server per SRS)
+- Install Python 3.11 + Microsoft ODBC Driver 17/18.
+- Create venv, `pip install -r requirements.txt`
+- Create `.streamlit/secrets.toml` from the `.example` file.
+- Set `USE_MOCK_DEFAULT = False` in `app.py`.
+- Run as Windows Service via NSSM or Task Scheduler + reverse proxy (IIS recommended).
+- See full details in `BFS_RO_Production_Dashboard_System_Requirements_v2.pdf`.
+
+### Secrets
+- Copy `.streamlit/secrets.toml.example` → `secrets.toml`
+- Use a dedicated **read-only** SQL login only. No DDL, no writes.
+- Connection example uses `TrustServerCertificate=yes` (common for internal).
 
 ---
 

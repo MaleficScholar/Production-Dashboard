@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """
-Daily RO Production Report Dashboard Beta 1.3.2
-Streamlit web interface for DB2 / RO Writer (MSSQL) read-only access
-Pulls hours per RO, hourly monitoring, day-over-day comparison, efficiency tracking,
-7/30-day trends, and weekly production tracker (Excel-style Earned/Goal)
+Daily RO Production Report Dashboard v2.0-beta
+Streamlit web interface for RO Writer (Microsoft SQL Server) read-only access.
+Pulls labor hours per Repair Order, hourly monitoring, day-over-day comparison,
+efficiency tracking (configurable), 7/30-day trends, and Weekly Production Tracker.
 
 Includes flexible column normalization so different RO Writer schemas still work.
+Read-only by design — no writes, no schema changes.
+
+Note: The included White Paper PDF is older marketing material focused on a DB2+API path.
+Current implementation follows the System Requirements v2 (direct MSSQL + pyodbc read-only login).
 """
+
+__version__ = "2.0.0-beta"
 
 import streamlit as st
 import pandas as pd
@@ -29,7 +35,7 @@ st.set_page_config(
     menu_items={
         "Get Help": "https://github.com/MaleficScholar/Production-Dashboard/commits/main/",
         "Report a bug": None,
-        "About": "© 2026 MaleficScholar • https://github.com/MaleficScholar"
+        "About": f"v{__version__} • © 2026 MaleficScholar • https://github.com/MaleficScholar • Read-only RO Writer dashboard"
     }
 )
 
@@ -98,8 +104,9 @@ st.markdown("""
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-USE_MOCK_DEFAULT = True          # Set to False in production after API integration
-API_BASE_URL = "https://api.yourcompany.com/db2/v1"  # <-- CHANGE ME
+USE_MOCK_DEFAULT = True          # Set to False in production after configuring real MSSQL connection
+API_BASE_URL = "https://api.yourcompany.com/db2/v1"  # legacy / optional
+DEFAULT_EXPECTED_HOURS_PER_TECH = 7.0  # default; users can override in sidebar for what-if
 
 try:
     API_KEY = st.secrets["db2"]["api_key"]
@@ -294,8 +301,10 @@ def fetch_data(report_date: date, use_mock: bool | None = None) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def process_data(df: pd.DataFrame, off_technicians: list = None) -> dict:
-    """Aggregate raw labor data into report-ready structures."""
+def process_data(df: pd.DataFrame, off_technicians: list = None, expected_hours_per_tech: float = 7.0) -> dict:
+    """Aggregate raw labor data into report-ready structures.
+    expected_hours_per_tech: configurable standard (default 7). Exposed in sidebar for what-if analysis.
+    """
     if df is None or df.empty:
         return {
             "total_hours": 0.0,
@@ -307,7 +316,8 @@ def process_data(df: pd.DataFrame, off_technicians: list = None) -> dict:
             "active_techs": 0,
             "expected_hours": 0.0,
             "efficiency": 0.0,
-            "total_techs": 0
+            "total_techs": 0,
+            "expected_hours_per_tech": expected_hours_per_tech
         }
 
     if off_technicians is None:
@@ -322,7 +332,7 @@ def process_data(df: pd.DataFrame, off_technicians: list = None) -> dict:
 
     avg_per_ro = round(total_hours / num_ros, 2) if num_ros > 0 else 0.0
 
-    expected_hours = num_active_techs * 7
+    expected_hours = num_active_techs * expected_hours_per_tech
     efficiency = round((total_hours / expected_hours * 100), 1) if expected_hours > 0 else 0.0
 
     hpr = (
@@ -400,35 +410,52 @@ def create_excel_report(
         )
 
         # === Sheet 1: Executive Summary ===
+        eff_note = f"Efficiency uses {filtered_processed.get('expected_hours_per_tech', 7.0)} expected hrs/tech/day (configurable in sidebar)"
         summary_rows = [
-            ["DAILY PRODUCTION REPORT Beta 1.3.2", ""],
+            [f"DAILY PRODUCTION REPORT v{__version__}", ""],
             ["Report Generated", datetime.now().strftime("%Y-%m-%d %H:%M")],
             ["Primary Date", str(primary_date)],
             ["Comparison Date", str(comparison_date) if comparison_date else "N/A"],
             ["", ""],
+            ["Efficiency Note", eff_note],
+            ["", ""],
         ]
+        section_header_rows = []  # track for dynamic formatting
+
         if comp_processed:
             delta_hrs = filtered_processed["total_hours"] - comp_processed["total_hours"]
             pct_change = (delta_hrs / comp_processed["total_hours"] * 100) if comp_processed["total_hours"] > 0 else 0
             summary_rows.extend([
                 ["PRIMARY DAY", ""],
+            ])
+            section_header_rows.append(len(summary_rows))  # row number of this header (1-based after write? we'll adjust)
+            summary_rows.extend([
                 ["Total Logged Hours", filtered_processed["total_hours"]],
                 ["Unique Repair Orders", filtered_processed["num_ros"]],
                 ["Avg Hours per RO", filtered_processed["avg_per_ro"]],
                 ["Efficiency %", filtered_processed.get("efficiency", 0)],
                 ["", ""],
                 ["COMPARISON DAY", ""],
+            ])
+            section_header_rows.append(len(summary_rows))
+            summary_rows.extend([
                 ["Total Logged Hours", comp_processed["total_hours"]],
                 ["Unique ROs", comp_processed["num_ros"]],
                 ["Avg Hours per RO", comp_processed["avg_per_ro"]],
                 ["", ""],
                 ["VARIANCE", ""],
+            ])
+            section_header_rows.append(len(summary_rows))
+            summary_rows.extend([
                 ["Hours Delta", round(delta_hrs, 1)],
                 ["% Change", f"{pct_change:+.1f}%"],
             ])
         else:
             summary_rows.extend([
                 ["PRIMARY DAY", ""],
+            ])
+            section_header_rows.append(len(summary_rows))
+            summary_rows.extend([
                 ["Total Logged Hours", filtered_processed["total_hours"]],
                 ["Unique Repair Orders", filtered_processed["num_ros"]],
                 ["Avg Hours per RO", filtered_processed["avg_per_ro"]],
@@ -439,12 +466,20 @@ def create_excel_report(
         summary_df.to_excel(writer, sheet_name="Executive_Summary", index=False)
 
         ws = wb["Executive_Summary"]
+        # Apply borders to all
         for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=2):
             for cell in row:
                 cell.border = thin_border
-                if cell.row in [1, 6, 12]:
-                    cell.fill = section_fill
-                    cell.font = section_font
+
+        # Dynamic section header formatting (find rows containing the section titles)
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=1):
+            cell = row[0]
+            if cell.value in ["PRIMARY DAY", "COMPARISON DAY", "VARIANCE", f"DAILY PRODUCTION REPORT v{__version__}"]:
+                cell.fill = section_fill
+                cell.font = section_font
+                # also highlight the Value cell in same row
+                ws.cell(row=cell.row, column=2).fill = section_fill
+                ws.cell(row=cell.row, column=2).font = section_font
 
         ws.column_dimensions['A'].width = 28
         ws.column_dimensions['B'].width = 18
@@ -495,13 +530,13 @@ def create_excel_report(
 # MAIN APPLICATION
 # =============================================================================
 def main():
-    # Header - Beta 1.3.2
-    st.markdown("""
+    # Header
+    st.markdown(f"""
     <div class="report-header">
-        <h1 style="margin:0; font-size:2.1rem;">Daily RO Production Report <span style="font-size:1.1rem; opacity:0.9;">Beta 1.3.2</span></h1>
+        <h1 style="margin:0; font-size:2.1rem;">Daily RO Production Report <span style="font-size:1.1rem; opacity:0.9;">v{__version__}</span></h1>
         <p style="margin:8px 0 0 0; opacity:0.95; font-size:1.05rem;">
-            Hours per Repair Order • Hourly Monitoring • Day-over-Day Comparison • Efficiency • Trends • Weekly Tracker<br>
-            <span style="font-size:0.9rem;">Read-only DB2 / RO Writer (MSSQL) • Mock mode ready</span>
+            Hours per Repair Order • Hourly Monitoring • Day-over-Day Comparison • Efficiency (configurable) • Trends • Weekly Tracker<br>
+            <span style="font-size:0.9rem;">Read-only RO Writer (MSSQL) • Mock mode ready • Direct pyodbc</span>
         </p>
     </div>
     """, unsafe_allow_html=True)
@@ -557,7 +592,20 @@ def main():
             st.session_state.off_technicians = []
             st.caption("Generate a report to select off technicians")
 
-        # Beta 1.3.2 Trend & Weekly Settings
+        # Configurable efficiency standard (new in v2.0)
+        st.divider()
+        st.subheader("Efficiency Standard")
+        expected_hours_per_tech = st.number_input(
+            "Expected productive hours per technician per day",
+            min_value=1.0,
+            max_value=12.0,
+            value=DEFAULT_EXPECTED_HOURS_PER_TECH,
+            step=0.5,
+            help="Used in efficiency % = (Actual Hours) / (Active Techs × this value). Change for what-if or different shift standards. Affects all displayed efficiencies."
+        )
+        st.session_state.expected_hours_per_tech = expected_hours_per_tech
+
+        # Trends & Weekly Tracker Settings
         st.divider()
         st.subheader("📈 Trends & Weekly Tracker")
         trend_window = st.selectbox(
@@ -600,28 +648,30 @@ def main():
             st.session_state.trend_window = trend_window
 
             off_techs = st.session_state.get("off_technicians", [])
+            expected_hrs = st.session_state.get("expected_hours_per_tech", DEFAULT_EXPECTED_HOURS_PER_TECH)
 
             if not primary_raw.empty:
-                st.session_state.primary_processed = process_data(primary_raw, off_technicians=off_techs)
+                st.session_state.primary_processed = process_data(primary_raw, off_technicians=off_techs, expected_hours_per_tech=expected_hrs)
             else:
                 st.session_state.primary_processed = None
 
             if do_comparison and not comp_raw.empty:
-                st.session_state.comp_processed = process_data(comp_raw, off_technicians=off_techs)
+                # Comparison day should NOT use today's OFF list — only primary day excludes OFF techs
+                st.session_state.comp_processed = process_data(comp_raw, off_technicians=[], expected_hours_per_tech=expected_hrs)
                 st.session_state.comp_raw = comp_raw
             else:
                 st.session_state.comp_processed = None
                 st.session_state.comp_raw = pd.DataFrame()
 
-            # === Beta 1.3.2: Build historical data for Trends + Weekly Tracker ===
+            # === Build historical data for Trends + Weekly Tracker ===
             num_days = 7 if trend_window == "7 Days" else 30
             hist_records = []
             for i in range(num_days):
                 d = primary_date - timedelta(days=i)
                 raw_d = fetch_data(d, use_mock=use_mock)
                 if not raw_d.empty:
-                    # Historical trends ignore today's OFF list
-                    proc_d = process_data(raw_d, off_technicians=[])
+                    # Historical trends ignore today's OFF list; use current expected hours setting for efficiency display
+                    proc_d = process_data(raw_d, off_technicians=[], expected_hours_per_tech=expected_hrs)
                     hist_records.append({
                         "date": d,
                         "total_hours": proc_d["total_hours"],
@@ -649,7 +699,8 @@ def main():
 
         filtered_raw = apply_filters(primary_raw, selected_techs, selected_depts)
         off_techs = st.session_state.get("off_technicians", [])
-        filtered_processed = process_data(filtered_raw, off_technicians=off_techs)
+        expected_hrs = st.session_state.get("expected_hours_per_tech", DEFAULT_EXPECTED_HOURS_PER_TECH)
+        filtered_processed = process_data(filtered_raw, off_technicians=off_techs, expected_hours_per_tech=expected_hrs)
 
         do_comp = st.session_state.get("do_comparison", False)
         comp = st.session_state.get("comp_processed")
@@ -939,9 +990,9 @@ def main():
                     primary_raw=primary_raw
                 )
                 st.download_button(
-                    "Full Multi-Sheet Excel Report (Beta 1.3.2)",
+                    f"Full Multi-Sheet Excel Report (v{__version__})",
                     data=excel_data,
-                    file_name=f"Daily_RO_Production_Report_Beta_1.3.2_{primary_date}.xlsx",
+                    file_name=f"Daily_RO_Production_Report_v{__version__.replace('.', '-')}_{primary_date}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
@@ -972,8 +1023,8 @@ def main():
     # Footer
     st.divider()
     st.caption(
-        "Read-only access only • Data accuracy depends on source system • "
-        "Beta 1.3.2 • Trends + Weekly Tracker + Efficiency Tracking + Flexible Column Mapping • "
+        f"Read-only access only • Data accuracy depends on source system • "
+        f"v{__version__} • Trends + Weekly Tracker + Efficiency (configurable) + Flexible Column Mapping • "
         f"© 2026 https://github.com/MaleficScholar • {datetime.now().strftime('%Y-%m-%d')}"
     )
 

@@ -1,4 +1,4 @@
-# Daily RO Production Report Dashboard Beta 1.3.2
+# Daily RO Production Report Dashboard v2.0-beta
 
 A professional Streamlit web interface for monitoring daily production in a service/repair environment.  
 It pulls **hours logged per Repair Order (RO)** from **RO Writer (Microsoft SQL Server)** using a read-only connection, generates a daily production report, provides hourly monitoring, efficiency tracking, 7/30-day trends, and a Weekly Production Tracker.
@@ -13,7 +13,7 @@ It pulls **hours logged per Repair Order (RO)** from **RO Writer (Microsoft SQL 
 - **Hours per RO table**: Detailed breakdown by RO number, technician, department, with totals, entry counts, and % of day's total
 - **Hourly Monitoring**: Bar charts of logged hours by hour of day + day-over-day line overlays
 - **Day-over-Day Comparison**: Side-by-side KPIs, variance (absolute + %), and hourly pattern comparison
-- **Efficiency Tracking**: Actual Hours ÷ (Active Technicians × 7 expected man-hours/day). Supports marking technicians as OFF so they are excluded from the calculation
+- **Efficiency Tracking**: Actual Hours ÷ (Active Technicians × configurable expected hours/day, default 7). Sidebar control for what-if. Supports marking technicians as OFF (primary day only).
 - **7 / 30-Day Trends**: Line charts tracking total logged hours and efficiency over time (with 100% target line)
 - **Weekly Production Tracker**: Excel-style view with Earned / Goal per day and Hours-to-Goal (goals are editable live)
 - **Interactive filters**: Technician and department (populated dynamically after first load)
@@ -108,6 +108,30 @@ in the application footer, about screen, and documentation.
 Removing or hiding the credit is a license violation.
 
 See the [LICENSE](LICENSE) file for full terms.
+
+---
+
+## Deployment (v2.0 additions)
+
+### Containerized (recommended for consistency)
+- `Dockerfile` and `docker-compose.yml` included.
+- Builds with Microsoft ODBC Driver 18 on Ubuntu 24.04 base.
+- Run: `docker compose up --build`
+- Mount your real `.streamlit/secrets.toml` at runtime (never bake creds in image).
+- For production: put behind reverse proxy (nginx/Caddy) for TLS + auth, bind Streamlit to localhost only, run under dedicated service account.
+
+### Traditional (Windows Server per SRS)
+- Install Python 3.11 + Microsoft ODBC Driver 17/18.
+- Create venv, `pip install -r requirements.txt`
+- Create `.streamlit/secrets.toml` from the `.example` file.
+- Set `USE_MOCK_DEFAULT = False` in `app.py`.
+- Run as Windows Service via NSSM or Task Scheduler + reverse proxy (IIS recommended).
+- See full details in `BFS_RO_Production_Dashboard_System_Requirements_v2.pdf`.
+
+### Secrets
+- Copy `.streamlit/secrets.toml.example` → `secrets.toml`
+- Use a dedicated **read-only** SQL login only. No DDL, no writes.
+- Connection example uses `TrustServerCertificate=yes` (common for internal).
 
 ---
 
